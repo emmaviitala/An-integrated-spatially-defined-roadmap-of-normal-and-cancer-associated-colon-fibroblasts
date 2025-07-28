@@ -1,0 +1,1610 @@
+---
+title: "Code4_human_CRC_normal_integration_scRNAseq"
+output: html_document
+date: "2025-07-14"
+---
+
+```{r}
+
+library(tidyverse)
+library(patchwork)
+library(cowplot)
+library(hdf5r)
+library(gdata)
+library(remotes)
+library(Seurat)
+library(uwot)
+library(ggpubr)
+library(WriteXLS)
+library(RColorBrewer)
+library(monocle3)
+library(monocle)
+
+```
+
+#create Seurat objects
+```{r}
+
+PatientData <- readxl::read_xlsx("/dir/Patient_data.xlsx")
+
+
+EpiMetadata <- readxl::read_xlsx("/dir/EpiMetadata.xlsx")
+EpiMetadata <- as.data.frame(EpiMetadata)
+
+
+EpiMetadata <- EpiMetadata %>% 
+  left_join(., PatientData, by=c("patient.ID"))
+
+
+NonEpiMetadata <- readxl::read_xlsx("/dir/NonEpiMetadata.xlsx")
+NonEpiMetadata <- as.data.frame(NonEpiMetadata)
+
+
+NonEpiMetadata <- NonEpiMetadata %>% 
+  left_join(., PatientData, by=c("patient.ID"))
+
+rownames(EpiMetadata) <- (EpiMetadata$cell.ID)
+
+rownames(NonEpiMetadata) <- (NonEpiMetadata$cell.ID)
+
+Epi <- Read10X_h5("/dir/Epithelial_Count_matrix.h5", use.names = TRUE, unique.features = TRUE)
+NonEpi <- Read10X_h5("/dir/NonEpithelial_Count_matrix.h5", use.names = TRUE, unique.features = TRUE)
+
+
+SeuObjEpi <- CreateSeuratObject(counts = Epi, project = "Epithelial",  min.cells = 3, min.features = 200, meta.data = EpiMetadata)
+SeuObjNonEpi <- CreateSeuratObject(counts = NonEpi, project = "NonEpithelial",  min.cells = 3, min.features = 200, meta.data = NonEpiMetadata)
+
+SeuObjEpi <- subset(SeuObjEpi, subset = sample.origin == "Normal" | sample.origin == "Tumor" | sample.origin == "Tumor-2")
+SeuObjNonEpi <- subset(SeuObjNonEpi, subset = sample.origin == "Normal" | sample.origin == "Tumor" | sample.origin == "Tumor-2")
+
+SeuObjEpi@meta.data[["sample.origin"]][SeuObjEpi@meta.data[["sample.origin"]] == "Tumor-2"] <- "Tumor"
+SeuObjNonEpi@meta.data[["sample.origin"]][SeuObjNonEpi@meta.data[["sample.origin"]] == "Tumor-2"] <- "Tumor"
+
+```
+
+```{r}
+ 
+VlnPlot(SeuObjEpi, features = c( "nFeature_RNA", "nCount_RNA"),  ncol=2, split.by = "sample.ID", pt.size = 0)
+
+```
+
+```{r}
+
+VlnPlot(SeuObjEpi, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"),  ncol=3)
+
+```
+
+```{r}
+
+SeuObjEpiSub <- subset(SeuObjEpi, subset = nCount_RNA < 50000)
+
+VlnPlot(SeuObjEpiSub, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"),  ncol=3)
+
+```
+
+```{r}
+
+VlnPlot(SeuObjNonEpi, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"),  ncol=3)
+
+```
+
+```{r}
+
+SeuObjNonEpiSub <- subset(SeuObjNonEpi, subset = nCount_RNA < 70000 & nFeature_RNA <5500)
+
+VlnPlot(SeuObjNonEpiSub, features = c("nCount_RNA", "nFeature_RNA"),  ncol=2)
+
+```
+
+```{r}
+
+CRC16 <- subset(SeuObjNonEpiSub, subset = orig.ident == "CRC16")
+CRC16@meta.data[["orig.ident2"]] <- "stroma"
+
+KUL3 <- subset(SeuObjNonEpiSub, subset = orig.ident == "KUL3")
+KUL3@meta.data[["orig.ident2"]] <- "stroma"
+
+KUL5 <- subset(SeuObjNonEpiSub, subset = orig.ident == "KUL5")
+KUL5@meta.data[["orig.ident2"]] <- "stroma"
+
+SMC <- subset(SeuObjNonEpiSub, subset = orig.ident == "SMC")
+SMC@meta.data[["orig.ident2"]] <- "stroma"
+
+JSC <- subset(SeuObjNonEpiSub, subset = orig.ident == "JSC")
+JSC@meta.data[["orig.ident2"]] <- "stroma"
+
+
+Epi_CRC16 <- subset(SeuObjEpiSub, subset = orig.ident == "CRC16")
+Epi_CRC16@meta.data[["orig.ident2"]] <- "epi"
+
+Epi_KUL3 <- subset(SeuObjEpiSub, subset = orig.ident == "KUL3")
+Epi_KUL3@meta.data[["orig.ident2"]] <- "epi"
+
+Epi_KUL5 <- subset(SeuObjEpiSub, subset = orig.ident == "KUL5")
+Epi_KUL5@meta.data[["orig.ident2"]] <- "epi"
+
+Epi_SMC <- subset(SeuObjEpiSub, subset = orig.ident == "SMC")
+Epi_SMC@meta.data[["orig.ident2"]] <- "epi"
+
+Epi_JSC <- subset(SeuObjEpiSub, subset = orig.ident == "JSC")
+Epi_JSC@meta.data[["orig.ident2"]] <- "epi"
+
+
+CRC16 <- merge(CRC16, y = Epi_CRC16)
+KUL3 <- merge(KUL3, y = Epi_KUL3)
+KUL5 <- merge(KUL5, y = Epi_KUL5)
+SMC <- merge(SMC, y = Epi_SMC)
+JSC <- merge(JSC, y = Epi_JSC)
+
+datalist <- list(CRC16, KUL3, KUL5, SMC, JSC)
+
+for (i in 1:length(datalist)) {
+    datalist[[i]] <- SCTransform(datalist[[i]], vars.to.regress = c("percent.mt"))
+    }
+
+features <- SelectIntegrationFeatures(object.list = datalist, nfeatures = 3000)
+datalist <- PrepSCTIntegration(object.list = datalist, anchor.features = features)
+datalist <- lapply(X = datalist, FUN = RunPCA, features = features)
+anchors <- FindIntegrationAnchors(object.list = datalist, normalization.method = "SCT",  anchor.features = features, reduction = "rpca", k.anchor = 10)
+DataIntegrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT")
+
+DataIntegrated <- subset(DataIntegrated, patient.ID == "CRC2786", invert =T)
+
+DefaultAssay(DataIntegrated) <- "integrated"
+
+DataIntegrated <- RunPCA(DataIntegrated, verbose = FALSE)
+ElbowPlot(DataIntegrated)
+DataIntegrated <- RunUMAP(DataIntegrated, reduction = "pca", dims = 1:30)
+
+DataIntegrated <- FindNeighbors(DataIntegrated, reduction = "pca", dims = 1:30)
+DataIntegrated <- FindClusters(DataIntegrated, resolution = 0.57)
+
+
+DefaultAssay(DataIntegrated) <- "RNA"
+
+DataIntegrated <- NormalizeData(DataIntegrated, verbose = F)
+DataIntegrated <- FindVariableFeatures(DataIntegrated, selection.method = "vst", nfeatures = 3000, verbose = FALSE)
+DataIntegrated <- ScaleData(DataIntegrated, verbose = FALSE)
+
+DimPlot(DataIntegrated, reduction = "umap", raster =F, label =T)
+
+```
+
+```{r}
+
+genes <- c("PDGFRA", "FAP", "DES", 
+           "ACTA2", "DES", "CSPG4", "RGS5", "PECAM1", "LYVE1", "S100B",
+           "EPCAM",  "MUC2", "CA1","LGR5",
+           "PTPRC", "C1QA", "CXCL8", "FCER1A", "KIT",
+           "MKI67", "IL7R", "CD3D", "CD4",  "CD8A", "MKI67",  "FOXP3",
+            "CD79A", "CD19", "IGHA1", "IGHG1", "IGKC")
+
+FeaturePlot(DataIntegrated, genes, order =T)
+
+```
+
+```{r}
+
+Markers <- FindAllMarkers(DataIntegrated, assay = "RNA")
+
+genes <- Markers %>%
+  top_n(n = 10, wt = avg_log2FC)
+
+VlnPlot(DataIntegrated, rownames(genes), pt.size = 0)
+
+```
+
+```{r}
+
+ClusterIDs <- c("CD8", "CD4",    "tissueMacr","CD8", "iCMS2Epi",  "B", 
+                "Treg", "CAF", "iCMS3Epi", "IgA_Plasma_IGKC+", "Endoth",
+                "CD4", "IgA_Plasma_IGKC+", "Fib", "IgG_Plasma_IGKC+", "Macr",
+                "Fib", "Goblet", "Peri",   "IgA_Plasma",   "IgA_Plasma", 
+                "Colonocyte","DC", "IgG_Plasma", "glia", "Mast", 
+                "Fib","Neutr","SMC", "proT", "KI67+immune")
+names(ClusterIDs) <- levels(DataIntegrated)
+DataIntegrated2 <- RenameIdents(DataIntegrated, ClusterIDs)
+
+
+DimPlot(DataIntegrated2, label = F, raster =F,
+         cols = c( "Fib" = "#05B985",  "CAF" = "#FA32D2", 'SMC' = '#C59ED4',
+             "Peri" =  "#F6F00D" ,
+             "Endoth" = "#69AF0D",
+             "glia" = "#F37907",
+             "Goblet" = "#A55910", "Colonocyte" = "#61350B",  "iCMS2Epi" = "#CC8745", "iCMS3Epi" = "#F7C08A",
+             "Macr" = "#131313",  "tissueMacr" = "#5D5B5A", "DC" = "#92908D","Neutr" = "#BEB9B5", "Mast" = "#E1DDDA",
+             "proT" = "#DEECEF","CD4" = "#9ED2DD", "CD8" = "#4DB6CC",   "Treg" = "#1E90A7",  "KI67+immune" = "#045565",
+             "B" = "#5A7B99",
+             "IgA_Plasma" = "#E3DBAE", "IgG_Plasma" = "#F9EB96","IgA_Plasma_IGKC+" = "#EBD56F", "IgG_Plasma_IGKC+" = "#EFC502")) & NoAxes()
+
+```
+
+#subset stroma for further annotation
+```{r}
+Stroma <- subset(DataIntegrated2, idents = c("Fib", "SMC", "CAF", "Peri", "Endoth", "glia"))
+
+DefaultAssay(Stroma) <- "integrated"
+
+Stroma <- RunPCA(Stroma, verbose = FALSE)
+ElbowPlot(Stroma)
+Stroma <- RunUMAP(Stroma, reduction = "pca", dims = 1:15)
+
+Stroma <- FindNeighbors(Stroma, reduction = "pca", dims = 1:15)
+Stroma <- FindClusters(Stroma, resolution = 0.5)
+
+DimPlot(Stroma, label = TRUE)
+
+```
+
+```{r}
+
+DefaultAssay(Stroma) <- "RNA"
+
+FeaturePlot(Stroma, c("PDGFRA", "KCNN3", "HHIP", "DES", "NOTCH3", "PECAM1", "LYVE1", "S100B", "KIT", "CCL19", "CXCL14",
+                      "VSTM2A", "SFTA1P", "PI16", "KCNN3", 
+                      "MMP1", "CXCL1", "IL6",
+                      "MMP11", "COL10A1", "COL11A1",
+                      "FAP", "MYH11", "ACTA2", "LRRC15",
+                       #artery ECs
+                      "GJA5", "FBLN5", 
+                      #capillary ECs 
+                      "CA4", "CD36",  "BTNL9",
+                      #vein ECs
+                      "ACKR1", "SELP"), order = T)
+
+```
+
+```{r}
+
+Markers <- FindAllMarkers(Stroma, assay = "RNA")
+
+genes <- Markers %>%
+  top_n(n = 10, wt = avg_log2FC)
+
+VlnPlot(Stroma, rownames(genes), pt.size = 0)
+
+```
+
+```{r}
+
+ClusterIDs <- c("mCAF", "MAF", "angPeri", "SAF", "preCAF2", "glia",
+                 "MIF",  "venEC", "tipEC", "art_capEC","contrPeri",
+                "preCAF1",    "SEMF", "SMC","iCAF", "lymphEC",
+                "myocytes")
+names(ClusterIDs) <- levels(Stroma)
+Stroma <- RenameIdents(Stroma, ClusterIDs)
+
+DimPlot(Stroma, label = TRUE)
+
+```
+
+#use fibroblast subcluster names to annotate same populations in the whole data
+```{r}
+
+Stroma@meta.data$populations <- Stroma@active.ident
+FibLabels <- select(Stroma@meta.data, c(cell.ID, populations))
+
+DataIntegrated2CR <- DataIntegrated2
+DataIntegrated2CRC@meta.data[["annotation"]] <- DataIntegrated2CRC@active.ident
+
+
+CellLabels <- select(DataIntegrated2CRC@meta.data, c(cell.ID, annotation))
+
+Labels <- left_join(CellLabels, FibLabels, by = "cell.ID" )
+
+
+fill_char_values <- function(df, col_to_fill, reference_col) {
+  df[[col_to_fill]] <- ifelse(is.na(df[[col_to_fill]]),
+                              as.character(df[[reference_col]]),  # Convert to character if needed
+                             as.character(df[[col_to_fill]]))
+  return(df)
+}
+
+Labels <- fill_char_values(Labels, "populations", "annotation")
+Labels <- Labels[,c(1,3)]
+
+DataIntegrated2CRC@meta.data <- left_join(DataIntegrated2CRC@meta.data, Labels, by = "cell.ID" )
+DataIntegrated2CRC@meta.data$populations.y <- as.factor(DataIntegrated2CRC@meta.data$populations.y)
+
+Idents(DataIntegrated2CRC) <- "populations.y"
+
+row.names(DataIntegrated2CRC@meta.data) <- DataIntegrated2CRC@meta.data$cell.ID
+
+
+DataIntegrated2CRC@active.ident <- factor(DataIntegrated2CRC@active.ident,
+                                       levels = c("SEMF","MAF","SAF", "MIF", "myocytes", "SMC",
+                                                 "preCAF1", "preCAF2", "iCAF",  "mCAF",
+                                                 "contrPeri", "angPeri", "lymphEC", "venEC", "art_capEC", "tipEC", "glia",
+                                                  "Goblet", "Colonocyte",  "iCMS2Epi", "iCMS3Epi",
+                                                   "Macr",  "tissueMacr", "DC","Neutr", "Mast", 
+                                                  "proT","CD4", "CD8",   "Treg",  "KI67+immune",
+                                                  "B",  "IgA_Plasma", "IgG_Plasma","IgA_Plasma_IGKC+", "IgG_Plasma_IGKC+"))
+
+
+DimPlot(DataIntegrated2CRC, label = F, raster =F,
+         cols = c("SEMF" = "#F6A937",  "MAF" = "#1D7BFC", 'SAF' = '#129B93',  "MIF" = "#035C56",
+                  "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+                  "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+                  "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+                  "lymphEC" = "#1C7522",
+                  "venEC" = "#099E46",  "art_capEC" = "#1DE00B",  "tipEC" = "#AFF233",
+                  "glia" = "#F37907",
+                  "Goblet" = "#A55910", "Colonocyte" = "#61350B",  "iCMS2Epi" = "#CC8745", "iCMS3Epi" = "#F7C08A",
+                  "Macr" = "#131313",  "tissueMacr" = "#5D5B5A", "DC" = "#92908D","Neutr" = "#BEB9B5", "Mast" = "#E1DDDA",
+                  "proT" = "#DEECEF","CD4" = "#9ED2DD", "CD8" = "#4DB6CC",   "Treg" = "#1E90A7",  "KI67+immune" = "#045565",
+                  "B" = "#5A7B99",
+                  "IgA_Plasma" = "#E3DBAE", "IgG_Plasma" = "#F9EB96","IgA_Plasma_IGKC+" = "#EBD56F", "IgG_Plasma_IGKC+" = "#B79702")) & NoAxes()
+
+saveRDS(DataIntegrated2CRC, file="/dir/Hs_CRC_integration.rds")
+
+```
+
+```{r}
+
+DimPlot(DataIntegrated2CRC, label = F, raster =F,
+         cols = c("SEMF" = "#F6A937",  "MAF" = "#1D7BFC", 'SAF' = '#129B93',  "MIF" = "#035C56",
+                  "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+                  "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+                  "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+                  "lymphEC" = "#1C7522",
+                  "venEC" = "#099E46",  "art_capEC" = "#1DE00B",  "tipEC" = "#AFF233",
+                  "glia" = "#F37907",
+                  "Goblet" = "#A55910", "Colonocyte" = "#61350B",  "iCMS2Epi" = "#CC8745", "iCMS3Epi" = "#F7C08A",
+                  "Macr" = "#131313",  "tissueMacr" = "#5D5B5A", "DC" = "#92908D","Neutr" = "#BEB9B5", "Mast" = "#E1DDDA",
+                  "proT" = "#DEECEF","CD4" = "#9ED2DD", "CD8" = "#4DB6CC",   "Treg" = "#1E90A7",  "KI67+immune" = "#045565",
+                  "B" = "#5A7B99",
+                  "IgA_Plasma" = "#E3DBAE", "IgG_Plasma" = "#F9EB96","IgA_Plasma_IGKC+" = "#EBD56F", "IgG_Plasma_IGKC+" = "#B79702"),
+        split.by = "orig.ident") & NoAxes()
+
+
+```
+
+```{r}
+
+DimPlot(DataIntegrated2CRC, label = F, raster =F,
+          cols = c("SEMF" = "#F6A937",  "MAF" = "#1D7BFC", 'SAF' = '#129B93',  "MIF" = "#035C56",
+                  "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+                  "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+                  "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+                  "lymphEC" = "#1C7522",
+                  "venEC" = "#099E46",  "art_capEC" = "#1DE00B",  "tipEC" = "#AFF233",
+                  "glia" = "#F37907",
+                  "Goblet" = "#A55910", "Colonocyte" = "#61350B",  "iCMS2Epi" = "#CC8745", "iCMS3Epi" = "#F7C08A",
+                  "Macr" = "#131313",  "tissueMacr" = "#5D5B5A", "DC" = "#92908D","Neutr" = "#BEB9B5", "Mast" = "#E1DDDA",
+                  "proT" = "#DEECEF","CD4" = "#9ED2DD", "CD8" = "#4DB6CC",   "Treg" = "#1E90A7",  "KI67+immune" = "#045565",
+                  "B" = "#5A7B99",
+                  "IgA_Plasma" = "#E3DBAE", "IgG_Plasma" = "#F9EB96","IgA_Plasma_IGKC+" = "#EBD56F", "IgG_Plasma_IGKC+" = "#B79702"),
+        split.by = "sample.origin") & NoAxes()
+
+```
+
+```{r}
+
+DataIntegrated2CRC@active.ident <- factor(DataIntegrated2CRC@active.ident,
+                                          levels = c("IgG_Plasma_IGKC+", "IgA_Plasma_IGKC+",
+                                                     "IgG_Plasma","IgA_Plasma",
+                                                     "B", "Treg", "CD8", "CD4", "proT", "KI67+immune", 
+                                                     "Mast", "DC", "Neutr", "tissueMacr", "Macr", 
+                                                     "iCMS3Epi", "iCMS2Epi", "Colonocyte","Goblet",
+                                                     "glia",  
+                                                     "tipEC", "art_capEC", "venEC","lymphEC", 
+                                                     "angPeri", "contrPeri", "SMC", "myocytes",
+                                                     "mCAF", "iCAF", "preCAF2", "preCAF1", 
+                                                     "MIF", "SAF","MAF", "SEMF"))
+
+genes <- c("EPCAM",  "MUC2", "CA1","LGR5", "AXIN2", "CTSE", "MMP7",
+           "PTPRC", "IL1B",
+           "C1QA", "CXCL8", "FCER1A",
+           "MKI67", "IL7R", "CD3D", "CD8A", "CD4",  "FOXP3",
+            "CD79A", "CD19", "IGHA1", "IGHG1", "IGKC")
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  genes, scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+DefaultAssay(Stroma) <- "integrated"
+
+ElbowPlot(Stroma)
+
+Stroma <- RunPCA(Stroma, verbose = FALSE)
+Stroma <- RunUMAP(Stroma, reduction = "pca", dims = 1:15)
+
+Stroma <- FindNeighbors(Stroma, reduction = "pca", dims = 1:15)
+Stroma <- FindClusters(Stroma, resolution = 0.6)
+
+DimPlot(Stroma, label = TRUE)
+
+DefaultAssay(Stroma) <- "RNA"
+
+FeaturePlot(Stroma, c("PECAM1", "RGS5", order = T))
+#Filter out endoth + rgs5 doublet cluster
+Stroma <- subset(Stroma, idents = 18, invert = T)
+
+DefaultAssay(Stroma) <- "integrated"
+
+ElbowPlot(Stroma)
+
+Stroma <- RunPCA(Stroma, verbose = FALSE)
+Stroma <- RunUMAP(Stroma, reduction = "pca", dims = 1:15)
+
+Stroma <- FindNeighbors(Stroma, reduction = "pca", dims = 1:15)
+Stroma <- FindClusters(Stroma, resolution = 0.4)
+
+DimPlot(Stroma, label = TRUE)
+
+```
+
+
+#filter out samples form stroma subanalysis: leave out patients who contribute to less than 5 clusters
+```{r}
+
+clusters_per_sample <- table(Stroma@meta.data$patient.ID, Stroma@meta.data$populations)
+
+# Count the number of clusters for each sample
+clusters_per_sample <- rowSums(clusters_per_sample > 0)
+
+# Identify samples that contribute cells to a minimum of 5 clusters
+samples_to_keep <- names(clusters_per_sample[clusters_per_sample >= 5])
+
+# Subset the Seurat object to include only samples that contribute to a minimum of 5 clusters
+Stroma <- subset(Stroma, subset = patient.ID %in% samples_to_keep)
+
+DimPlot(Stroma, split.by = "patient.ID", ncol = 6)
+
+```
+
+#filter out patients who contribute less than 50 cells in total to the stroma analysis
+```{r}
+
+sample_names <-Stroma@meta.data[["patient.ID"]]
+
+# Calculate the number of cells per sample
+cell_counts <- tapply(1:nrow(Stroma@meta.data), Stroma@meta.data$patient.ID, length)
+
+# Identify samples with less than 50 cells
+samples_to_remove <- sample_names[cell_counts[sample_names] < 50]
+samples_to_remove <- unique(samples_to_remove)
+
+Idents(Stroma) <- "patient.ID"
+
+Stroma <- subset(Stroma, idents = samples_to_remove, invert = T)
+
+Idents(Stroma) <- "seurat_clusters"
+
+DimPlot(Stroma, label = T)
+
+```
+
+```{r}
+
+DefaultAssay(Stroma) <- "integrated"
+
+ElbowPlot(Stroma)
+Stroma <- RunPCA(Stroma, verbose = FALSE)
+Stroma <- RunUMAP(Stroma, reduction = "pca", dims = 1:26)
+Stroma <- FindNeighbors(Stroma, reduction = "pca", dims = 1:26)
+Stroma <- FindClusters(Stroma, resolution = 0.6)
+
+DimPlot(Stroma, label = TRUE)
+
+
+ClusterIDs <- c("MAF",  "preCAF1",  "angPeri",  "SAF", "preCAF2", "tipEC",
+                "mCAF",  "glia", "MIF", "venEC", "art_capEC",
+               "contrPeri", "SEMF", "iCAF", "SMC",  "lymphEC",
+                  "myocytes")
+names(ClusterIDs) <- levels(Stroma)
+Stroma <- RenameIdents(Stroma, ClusterIDs)
+
+
+Stroma@active.ident <- factor(Stroma@active.ident,
+                                       levels = c("SEMF", "MAF", "SAF", "MIF",
+                                                 "preCAF1", "preCAF2", "iCAF",  "mCAF",
+                                                  "myocytes", "SMC", 
+                                                 "contrPeri","angPeri",
+                                                  "art_capEC", "venEC", "tipEC",
+                                                  "lymphEC", "glia"))
+
+DimPlot(Stroma, label = TRUE) & NoAxes()
+
+DimPlot(Stroma,  cols = c(  "SEMF" = "#F6A937",  "MAF" = "#1D7BFC", 'SAF' = '#129B93',  "MIF" = "#035C56",
+            "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+                            "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+                         "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+                         "lymphEC" = "#1C7522",
+                         "venEC" = "#099E46",  "art_capEC" = "#1DE00B",  "tipEC" = "#AFF233",
+                         "glia" = "#F37907")) & NoAxes()
+
+saveRDS(Stroma, file="/dir/Hs_CRC_Stroma.rds")
+
+```
+
+```{r}
+
+DimPlot(Stroma,  cols = c(  "SEMF" = "#F6A937",  "MAF" = "#1D7BFC", 'SAF' = '#129B93',  "MIF" = "#035C56",
+         
+            "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+                            "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+                         "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+                         "lymphEC" = "#1C7522",
+                         "venEC" = "#099E46",  "art_capEC" = "#1DE00B",  "tipEC" = "#AFF233",
+                         "glia" = "#F37907"), split.by = "orig.ident") & NoAxes()
+
+```
+
+```{r}
+
+DimPlot(Stroma,  cols = c(  "SEMF" = "#F6A937",  "MAF" = "#1D7BFC", 'SAF' = '#129B93',  "MIF" = "#035C56",
+         
+            "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+                            "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+                         "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+                         "lymphEC" = "#1C7522",
+                         "venEC" = "#099E46",  "art_capEC" = "#1DE00B",  "tipEC" = "#AFF233",
+                         "glia" = "#F37907"), split.by = "patient.ID") & NoAxes()
+
+```
+
+```{r}
+
+Patients <- select(Stroma@meta.data, c(patient.ID, populations, sample.origin))
+
+Patients <- Patients %>%
+  group_by(patient.ID, populations, sample.origin) %>% 
+  summarise(Nb = n()) %>%
+  ungroup()%>%
+  group_by(patient.ID, sample.origin) %>% 
+  mutate(Count = sum(Nb)) %>%
+  mutate(Percent = Nb/Count*100) %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>%
+  ungroup()
+
+PatientData <- unique(select(Stroma@meta.data, c(patient.ID, sample.origin)))
+
+Patients <- left_join(Patients, PatientData, by = c("patient.ID", "sample.origin"))
+
+Patients %>%
+  mutate(category_reordered = factor(populations, levels = c(
+    "SEMF", "MAF", "SAF", "MIF", 
+    "preCAF1", "preCAF2", "iCAF", "mCAF",
+    "myocytes", "SMC",
+    "contrPeri", "angPeri",
+    "lymphEC", "venEC", "art_capEC", "tipEC",
+    "glia"
+  ))) %>% 
+  ggplot(aes(x = patient.ID, y = Percent, fill = category_reordered)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid( ~ sample.origin, scales = "free", space = "free")+
+  scale_fill_manual(values = c(
+    "SEMF" = "#F6A937", "MAF" = "#1D7BFC", "SAF" = "#129B93", "MIF" = "#035C56",
+    "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+    "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+    "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+    "lymphEC" = "#1C7522", "venEC" = "#099E46", "art_capEC" = "#1DE00B", "tipEC" = "#AFF233",
+    "glia" = "#F37907"
+  )) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+```{r}
+
+FeaturePlot(Stroma, c("KIT", "CCL19", "MKI67", "CD74"), order = T, ncol = 4) & NoAxes()
+
+```
+
+```{r}
+
+PANCAF <- FindMarkers(DataIntegrated2CRC, ident.1 = c("preCAF1", "preCAF2", "iCAF", "mCAF"), assay = "RNA", logfc.threshold = 0.5, min.pct = 0.5, min.diff.pct = 0.6, only.pos = T)
+
+preCAF1 <- FindMarkers(Stroma, ident.1 = "preCAF1", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+preCAF2 <- FindMarkers(Stroma, ident.1 = "preCAF2", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+iCAF <- FindMarkers(Stroma, ident.1 = "iCAF", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+mCAF <- FindMarkers(Stroma, ident.1 = "mCAF", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+
+```
+
+```{r}
+
+preCAF1 <- filter(preCAF1, Name %in%  c( "F2RL2", "CPXM1",   "MME", "TMEM158", "COL7A1",  "CXCL1","FAM20C", "PDPN","WNT2", 
+                                         "CST1","DIO2", "TNFSF11",
+                                         "TRPA1", "SOX6","HSD17B2", "NSG1","TSPAN33",  "AGT", "F3",
+                                         "DLL1", "EMID1", "SMPDL3A", "CXCL14", "PTCH1","PTGER2", "CYGB"))
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  rownames(preCAF1), scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+preCAF2 <- filter(preCAF2, Name %in% c("IGF1", "GAS1", "CYP1B1","RARRES1","CRABP2",   "COMP", "SFRP4",  "COL8A1",  "ADAM12",
+             "MYH10", "FNDC1", "ZFHX4",  "STEAP1", "STEAP2" , "GFPT2", "PDGFRL",  "BOC",
+             "C3", "CCDC80", "PRELP","OGN","PODN", "PTGIS", "PTGDS", "MMP23B",
+             "SFRP2",  "CILP",  "SLIT3",   "MEDAG" ))
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  rownames(preCAF2), scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+iCAF <- filter(iCAF, Name %in%  c("MMP1", "MMP3", "CXCL5", "CXCL6",
+            "CA12", "CXCL1", "CXCL3", "GK",  "CXCL8","TNFAIP6", "IL7R",
+            "SPHK1", "PDPN",  "CHI3L1", "HSD11B1",  "FAM20C",
+            "PTGES", "TMEM132A", "TMEM158", "COL7A1", "WNT5A", "MME",
+            "GFPT2", "STEAP1", "STEAP2" ))
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  rownames(iCAF), scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+mCAF <-filter(mCAF, Name %in% c("COL10A1", "COL11A1","PLPP4", "GJB2",   "NOX4", "NTM",  "BHLHE41", "HOPX",
+             "LINC01705",
+             "COMP", "ITGBL1",  "SLC12A8", 
+               "SFRP4",   "COL16A1", "ITGA11","MMP11", "ASPN"))
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  rownames(mCAF), scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+genes <- c("F2RL2","TSPAN33", "TMEM158",
+           "IGF1", "GAS1","CRABP2",   "COMP", 
+           "MMP1", "MMP3", "CXCL5", "CXCL6",
+           "COL10A1", "COL11A1","PLPP4")
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  genes, scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+Stroma@active.ident <- factor(Stroma@active.ident,levels = c( "glia", "tipEC", "art_capEC","venEC",  "lymphEC", 
+                                                               "angPeri", "contrPeri", "SMC",  "myocytes",
+                                                              "mCAF",  "iCAF",  "preCAF2","preCAF1",
+                                                               "MIF","SAF",  "MAF", "SEMF"))
+ 
+DotPlot(Stroma,  assay = "RNA", dot.min = 0.05,
+        c("PDGFRA", "VSTM2A",   "SFTA1P",  "PI16", "KCNN3",
+          "FAP", "WNT5A","CXCL14", "HGF",
+          "PDGFRL","C3", "SFRP2", "CTGF", "COL1A1",
+           "MMP1" , "CXCL1", "IL6", 
+           "MMP11", "HOPX", "COL10A1", "COL11A1",
+          "HHIP", "DES",
+           "PDGFRB", "NOTCH3", "CSPG4", "RERGL", "RGS5",
+          "ACTA2", "CNN1", "TAGLN", "MYH11",  "MYL9", "MYLK", "ACTG2", "TPM1", "TPM2",  "LUM",
+          "LYVE1","PECAM1",  "SELP", "CD36", "CA4",  "APLN", "ESM1", "S100B"),
+        scale.by = "size", col.min = 0)+
+  theme(axis.text=element_text(angle=90))
+
+```
+
+```{r}
+
+panCAF <- data.frame(Name = c("CTHRC1", "INHBA", "THBS2", "CHPF"))
+preCAF1 <- c("F2RL2","TSPAN33", "TMEM158")
+preCAF2 <- c("IGF1", "GAS1","CRABP2", "COMP")
+iCAF <- c("MMP1", "MMP3", "CXCL5", "CXCL6")
+mCAF <- c("COL10A1", "COL11A1","PLPP4")
+
+
+SEMF <- FindMarkers(Stroma, ident.1 = "SEMF", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+MAF <- FindMarkers(Stroma, ident.1 = "MAF", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+SAF <- FindMarkers(Stroma, ident.1 = "SAF", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+MIF <- FindMarkers(Stroma, ident.1 = "MIF", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+myocytes <- FindMarkers(Stroma, ident.1 = "myocytes", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+SMC <- FindMarkers(Stroma, ident.1 = "SMC", assay = "RNA", logfc.threshold = 0.25, min.pct = 0.25, min.diff.pct = 0.4, only.pos = T)
+
+SEMF <- filter(SEMF, Name %in%  c("F3", "AGT", "FRZB", "NSG1", "CXCL14", "BMP5", "VSTM2A", "COL4A6", "COL4A5", "NRG1", "TRPA1", "SOX6", "PDGFD", "HSD17B2"))
+
+MAF <- filter(MAF, Name %in%  c("HAPLN1", "EDIL3", "CXCL14", "ADAM28", "ADAMDEC1", "SCARA5", "STMN2", "FABP5", "FABP4", "SFTA1P", "APOE", "CCL8", "CCL13"))
+
+SAF <- filter(SAF, Name %in%  c("PCOLCE2", "SFRP2", "SLIT3", "PI16", "FGL2", "ITM2A", "CHRDL1", "SFRP1", "OSR2", "F10", "CILP", "C3"))
+
+MIF <- filter(MIF, Name %in%  c("KCNN3", "SCN7A", "RAMP1", "P2RY1", "SNCA", "GUCY1A1", "C7", "THBS4", "FNDC1", "VIPR2", "PDGFRL", "NCALD", "ASPN", "JAM2", "MBP", "ADAMTSL3", "CCL11"))
+
+myocytes <- filter(myocytes, Name %in%  c("P2RY14", "PROM1", "NPNT", "HHIP-AS1", "HHIP", "SOSTDC1", "SEMA3D", "HSD17B6", "MYOCD", "TGFBR3", "APOC1", "CMIP", "EDNRB"))
+
+SMC <- filter(SMC, Name %in%  c("DES", "SPEG", "HOPX", "MAB21L2", "GPM6A", "SCL25A4", "SORBS2", "HAND1", "PLN", "PERP", "FBXO32", "HACD1", "SYNM", "KCNMA1"))
+
+```
+
+```{r}
+
+DefaultAssay(DataIntegrated2CRC) <- "RNA"
+
+PANCAF <- c("ACTA2", "PDGFRA", "PDGFRB", "FAP", "S100A4", "PDPN", "LRRC15", "POSTN", "TNC",
+            "CTHRC1", "INHBA", "THBS2", "WNT2")
+
+DotPlot(DataIntegrated2CRC,  assay = "RNA", dot.min = 0.05,  rownames(PANCAF), scale.by = "size", col.min = 0)+
+      theme(axis.text=element_text(angle=90))
+
+```
+
+#trajectory
+```{r}
+
+cds <- SeuratWrappers::as.cell_data_set(Stroma)
+cds <- cluster_cells(cds, resolution=0.00012)
+
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE) + NoAxes()
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE) + NoAxes()
+
+wrap_plots(p1, p2) 
+
+```
+
+```{r}
+
+cds <- learn_graph(cds, use_partition = TRUE, verbose = FALSE)
+
+plot_cells(cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE) + NoAxes()
+
+```
+
+```{r}
+cds <- order_cells(cds, root_cells = colnames(cds[,clusters(cds) == c(6,8, 14)]))
+
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60") + NoAxes()
+
+```
+
+```{r}
+
+genelist10 <- list(c("PRRX1", "MAFB", "TWIST1"))
+Stroma <- AddModuleScore(object = Stroma, features = genelist10, name = "genelist10")
+
+FeaturePlot(object = Stroma, features = "genelist10", order = T) & scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "Spectral"))) & NoAxes()
+
+```
+
+```{r}
+
+Stroma@meta.data$populations <- Stroma@active.ident
+
+Tumor <- subset(Stroma, sample.origin == "Tumor")
+
+CAFs <- subset(Tumor, idents = c("preCAF1", "preCAF2", "mCAF", "iCAF"))
+
+CAFs2 <- CAFs
+CAFs2@meta.data$CAFpopulations <- CAFs2@active.ident
+sample_names <-CAFs2@meta.data[["patient.ID"]]
+
+# Calculate the number of cells per sample
+cell_counts <- tapply(1:nrow(CAFs2@meta.data), CAFs2@meta.data$patient.ID, length)
+
+# Identify samples with less than 50 cells
+samples_to_remove <- sample_names[cell_counts[sample_names] < 50]
+samples_to_remove <- unique(samples_to_remove)
+
+Idents(CAFs2) <- "patient.ID"
+
+CAFs2 <- subset(CAFs2, idents = samples_to_remove, invert = T)
+
+Idents(CAFs2) <- "CAFpopulations"
+
+DimPlot(CAFs2, cols = c("preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5"), ncol = 8, split.by = "patient.ID")
+
+```
+
+```{r}
+
+PatientPlots <- select(CAFs2@meta.data, c(patient.ID, CAFpopulations))
+
+PatientPlots <- PatientPlots %>%
+  group_by(patient.ID, CAFpopulations) %>% 
+  summarise(Nb = n()) %>%
+  mutate(Count = sum(Nb)) %>%
+  mutate(Percent = Nb/Count*100) %>%
+  #mutate(across(where(is.numeric), ~ round(., 1)))%>%
+  ungroup()
+
+PatientData <- unique(select(Tumor@meta.data, c(patient.ID, MS.status, iCMS, CMS, KRAS, BRAF, APC, TP53, PIK3CA, Sidedness, Group.Stage, sample.origin, Site)))
+
+PatientPlots <- left_join(PatientPlots, PatientData, by = "patient.ID")
+
+```
+
+```{r}
+
+CAFproportions <- PatientPlots %>%
+    filter(!str_detect(sample.origin, "NA")) %>%
+    group_by(sample.origin, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(sample.origin) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFproportions %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(sample.origin, "NA")) %>%
+  ggplot(., aes(x = sample.origin, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+```
+
+
+```{r}
+
+CAFCMS <- PatientPlots %>%
+    filter(!str_detect(CMS, "NA")) %>%
+    group_by(CMS, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(CMS) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFCMS %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(CMS, "NA")) %>%
+  mutate(CMS = factor(CMS, levels= c("CMS1", "CMS2", "CMS3", "CMS4")))%>%
+  ggplot(., aes(x = CMS, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  #mutate(MS.status = fct_relevel(MS.status, "MSS", "MSI-H"))%>%
+  filter(!str_detect(CMS, "NA"))%>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  #geom_text(aes(label = paste(Percent,"%")), position = position_stack(vjust = 0.5), size = 2)+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ CMS, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(CMS, "NA"))%>%
+  mutate(CMS_group = ifelse(CMS %in% c("CMS3", "CMS2", "CMS4"), "CMSall", "CMS1")) %>%
+  filter(str_detect(CAFpopulations, "preCAF2"))
+
+PatientPlots2 %>%
+  mutate(CMS_group = fct_relevel(CMS_group, "CMSall", "CMS1"))%>%
+  ggplot(., aes(x = CMS_group, y = Percent, color = CMS_group ))+
+  scale_color_manual(values = c("CMSall" = "#53D3F3", "CMS1" = "#0C92C6")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(CMS, "NA"))%>%
+  mutate(CMS_group = ifelse(CMS %in% c("CMS1", "CMS2", "CMS4"), "CMSall", "CMS3")) %>%
+  filter(str_detect(CAFpopulations, "preCAF1"))
+
+PatientPlots2 %>%
+  mutate(CMS_group = fct_relevel(CMS_group, "CMSall", "CMS3"))%>%
+  ggplot(., aes(x = CMS_group, y = Percent, color = CMS_group ))+
+  scale_color_manual(values = c("CMSall" = "#FD9AFC", "CMS3" = "#F70DD1")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(CMS, "NA"))%>%
+  mutate(CMS_group = ifelse(CMS %in% c("CMS1", "CMS2", "CMS3"), "CMSall", "CMS4")) %>%
+  filter(str_detect(CAFpopulations, "mCAF"))
+
+PatientPlots2 %>%
+  mutate(CMS_group = fct_relevel(CMS_group, "CMSall", "CMS4"))%>%
+  ggplot(., aes(x = CMS_group, y = Percent, color = CMS_group ))+
+  scale_color_manual(values = c("CMSall" = "#AD7FE9", "CMS4" = "#740DE2")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+CAFiCMS <- PatientPlots %>%
+    filter(!str_detect(iCMS, "NA")) %>%
+    group_by(iCMS, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(iCMS) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFiCMS %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(iCMS, "NA")) %>%
+  mutate(iCMS = factor(iCMS, levels= c("iCMS2", "iCMS3")))%>%
+  ggplot(., aes(x = iCMS, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ iCMS, scales = "free", space = "free")
+
+```
+
+```{r}
+
+CAFSide <- PatientPlots %>%
+    filter(!str_detect(Sidedness, "NA")) %>%
+    group_by(Sidedness, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(Sidedness) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFSide %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(Sidedness, "NA")) %>%
+  mutate(Sidedness = factor(Sidedness, levels= c("R", "L")))%>%
+  ggplot(., aes(x = Sidedness, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(Sidedness = factor(Sidedness, levels= c("R", "L")))%>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ Sidedness, scales = "free", space = "free")
+
+```
+
+```{r}
+
+CAFSide2 <- Stroma@meta.data %>%
+  select(patient.ID, populations, sample.origin, Site) %>%
+  filter(sample.origin == "Tumor") %>%
+  filter(populations %in% c("preCAF1", "preCAF2", "iCAF", "mCAF")) %>%
+  
+  ## ---------- NEW: collapse individual sites into 3 regions ----------
+  mutate(
+    Region = case_when(
+      Site %in% c(
+        "Caecum", "Ascending colon", "Hepatic Flexure", "Distal Ascending colon", "Transverse colon"
+      )                            ~ "Proximal colon",
+      Site %in% c(
+        "Descending colon", "Distal Descending colon",
+        "Sigmoid colon", "Distal Sigmoid colon", "Rectosigmoid"
+      )                            ~ "Distal colon",
+      Site %in% c(
+        "Upper rectum", "Mid-rectum", "Low rectum", "Rectum"
+      )                            ~ "Rectum",
+      TRUE                         ~ NA_character_   # catch any stray value
+    )
+  ) %>%
+  filter(!is.na(Region)) %>%      # drop stray/unknown sites if any
+  ## -------------------------------------------------------------------
+
+  group_by(Region, populations) %>%  # ← use Region instead of Site
+  summarise(Nb = n(), .groups = "drop_last") %>%
+  mutate(Total   = sum(Nb),
+         Percent = round(Nb / Total * 100, 2)) %>%
+  ungroup()
+
+# set the x-axis order you prefer
+region_order <- c("Proximal colon", "Distal colon", "Rectum")
+CAFSide2$Region <- factor(CAFSide2$Region, levels = region_order)
+
+CAFSide2 %>%
+  mutate(populations = factor(populations,
+                              levels = c("preCAF1", "preCAF2", "iCAF", "mCAF"))) %>%
+  ggplot(aes(x = Region, y = Percent, fill = populations)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = ifelse(Percent >= 5, paste0(Percent, "%"), "")),  # Only label >5% for clarity
+            position = position_stack(vjust = 0.5),
+            color = "white", size = 3) +
+  scale_fill_manual(values = c(
+    preCAF1 = "#FD9AFC",
+    preCAF2 = "#53D3F3",
+    iCAF    = "#FD3369",
+    mCAF    = "#7012E5"
+  )) +
+  xlab("Tumor region") +
+  ylab("Percent composition of CAFs") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(Site, "NA"))%>%
+  mutate(
+    Region = case_when(
+      Site %in% c(
+        "Caecum", "Ascending colon", "Hepatic Flexure", "Distal Ascending colon", "Transverse colon"
+      )                            ~ "Proximal colon",
+      Site %in% c(
+        "Descending colon", "Distal Descending colon",
+        "Sigmoid colon", "Distal Sigmoid colon", "Rectosigmoid"
+      )                            ~ "Distal colon",
+      Site %in% c(
+        "Upper rectum", "Mid-rectum", "Low rectum", "Rectum"
+      )                            ~ "Rectum",
+      TRUE                         ~ NA_character_   # catch any stray value
+    )
+  ) %>%  filter(str_detect(CAFpopulations, "preCAF1"))
+
+comparisons <- list(
+  c("Proximal colon", "Rectum"),
+  c("Distal colon", "Rectum"))
+
+PatientPlots2 %>%
+  mutate(Region = fct_relevel(Region, "Proximal colon", "Distal colon", "Rectum"))%>%
+  ggplot(., aes(x = Region, y = Percent, color = Region ))+
+  scale_color_manual(values = c("Proximal colon" = "#FD9AFC", "Distal colon" = "#FD9AFC", "Rectum" = "#F70DD1")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", comparisons = comparisons, label = "p.format") 
+
+```
+
+```{r}
+
+CAFMS <- PatientPlots %>%
+    filter(!str_detect(MS.status, "NA")) %>%
+    group_by(MS.status, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(MS.status) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFMS %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(MS.status, "NA")) %>%
+  mutate(MS.status = factor(MS.status, levels= c("MSS", "MSI-H")))%>%
+  ggplot(., aes(x = MS.status, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(MS.status = factor(MS.status, levels= c("MSS", "MSI-H")))%>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ MS.status, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(MS.status, "NA"))%>%
+  filter(str_detect(CAFpopulations, "preCAF2"))
+
+PatientPlots2 %>%
+  mutate(MS.status = factor(MS.status, levels= c("MSS", "MSI-H")))%>%
+  ggplot(., aes(x = MS.status, y = Percent, color = MS.status))+
+  scale_color_manual(values = c("MSS" = "#53D3F3", "MSI-H" = "#0C92C6")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+CAFStage <- PatientPlots %>%
+    filter(!str_detect(Group.Stage, "NA")) %>%
+    group_by(Group.Stage, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(Group.Stage) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFStage %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(Group.Stage, "NA")) %>%
+  ggplot(., aes(x = Group.Stage, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ Group.Stage, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(Group.Stage, "NA"))%>%
+  mutate(Stage = ifelse(Group.Stage %in% c("1", "2"), "1/2", "3/4")) %>%
+  filter(str_detect(CAFpopulations, "iCAF"))
+
+PatientPlots2 %>%
+  mutate(Stage = factor(Stage, levels= c("1/2", "3/4")))%>%
+  ggplot(., aes(x = Stage, y = Percent, color = Stage))+
+  scale_color_manual(values = c("1/2" = "#FF4BC0", "3/4" = "#DC043E")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+CAFAPC <- PatientPlots %>%
+    filter(!str_detect(APC, "NA")) %>%
+    group_by(APC, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(APC) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFAPC %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(APC, "NA")) %>%
+  mutate(APC = factor(APC, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = APC, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(APC = factor(APC, levels= c("wt", "mut")))%>%
+   filter(!str_detect(APC, "NA")) %>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ APC, scales = "free", space = "free")
+
+```
+
+```{r}
+
+CAFKRAS <- PatientPlots %>%
+    filter(!str_detect(KRAS, "NA")) %>%
+    group_by(KRAS, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(KRAS) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFKRAS %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(KRAS, "NA")) %>%
+  mutate(KRAS = factor(KRAS, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = KRAS, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(KRAS = factor(KRAS, levels= c("wt", "mut")))%>%
+   filter(!str_detect(KRAS, "NA")) %>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ KRAS, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(KRAS, "NA"))%>%
+  filter(str_detect(CAFpopulations, "mCAF"))
+
+PatientPlots2 %>%
+  mutate(KRAS = factor(KRAS, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = KRAS, y = Percent, color = KRAS))+
+  scale_color_manual(values = c("wt" = "#AD7FE9", "mut" = "#740DE2")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+agg_data <- PatientPlots %>%
+  filter(!str_detect(KRAS, "NA")) %>%
+  mutate(
+    StageGroup = case_when(
+      Group.Stage %in% c("1", "2") ~ "1/2",
+      Group.Stage %in% c("3", "4") ~ "3/4",
+      TRUE                         ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(StageGroup)) %>%
+  group_by(KRAS, StageGroup, CAFpopulations) %>%
+  summarize(Percent = sum(Percent), .groups = "drop") %>%
+  group_by(KRAS, StageGroup) %>%
+  mutate(
+    Percent_norm = Percent / sum(Percent) * 100,
+    category_reordered = factor(CAFpopulations, levels = c("preCAF1", "preCAF2", "mCAF", "iCAF"))
+  ) %>%
+  ungroup() %>%
+  mutate(KRAS = fct_relevel(KRAS, "wt", "mut"))  # Make sure this is here
+
+ggplot(agg_data, aes(x = KRAS, y = Percent_norm, fill = category_reordered)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = sprintf("%.1f%%", Percent_norm)), 
+            position = position_stack(vjust = 0.5), size = 3, color = "white") +
+  scale_fill_manual(values = c(
+    "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3",
+    "iCAF" = "#FD3369", "mCAF" = "#7012E5"
+  )) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  facet_grid(~ StageGroup, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(KRAS, "NA"))%>%
+  filter(str_detect(CAFpopulations, "mCAF"))
+
+PatientPlots2 %>%
+  mutate(KRAS = factor(KRAS, levels= c("wt", "mut")))%>%
+  mutate(
+    StageGroup = case_when(
+      Group.Stage %in% c("1", "2") ~ "1/2",
+      Group.Stage %in% c("3", "4") ~ "3/4",
+      TRUE                         ~ NA_character_
+    )
+  ) %>%
+  ggplot(., aes(x = KRAS, y = Percent, color = KRAS))+
+  scale_color_manual(values = c("wt" = "#AD7FE9", "mut" = "#740DE2")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  facet_wrap( ~ StageGroup)+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+CAFTP53 <- PatientPlots %>%
+    filter(!str_detect(TP53, "NA")) %>%
+    group_by(TP53, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(TP53) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFTP53 %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(TP53, "NA")) %>%
+  mutate(TP53 = factor(TP53, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = TP53, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(TP53 = factor(TP53, levels= c("wt", "mut")))%>%
+   filter(!str_detect(TP53, "NA")) %>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ TP53, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(TP53, "NA"))%>%
+  filter(str_detect(CAFpopulations, "preCAF1"))
+
+PatientPlots2 %>%
+  mutate(TP53 = factor(TP53, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = TP53, y = Percent, color = TP53))+
+  scale_color_manual(values = c("wt" = "#FD9AFC", "mut" = "#F70DD1")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+
+```
+
+```{r}
+
+CAFBRAF <- PatientPlots %>%
+    filter(!str_detect(BRAF, "NA")) %>%
+    group_by(BRAF, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(BRAF) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFBRAF %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>%
+  filter(!str_detect(BRAF, "NA")) %>%
+  mutate(BRAF = factor(BRAF, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = BRAF, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(BRAF = factor(BRAF, levels= c("wt", "mut")))%>%
+   filter(!str_detect(BRAF, "NA")) %>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ BRAF, scales = "free", space = "free")
+
+```
+
+```{r}
+
+CAFPIK3CA <- PatientPlots %>%
+    filter(!str_detect(PIK3CA, "NA")) %>%
+    group_by(PIK3CA, CAFpopulations) %>%
+    summarise(
+        AvgPercent = mean(Percent, na.rm = TRUE),
+        .groups = 'drop'
+    ) %>%
+    group_by(PIK3CA) %>%
+    mutate(AvgPercent = AvgPercent / sum(AvgPercent) * 100) %>%
+    ungroup() %>%
+    mutate(AvgPercent = round(AvgPercent, 1))
+
+CAFPIK3CA %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  filter(!str_detect(PIK3CA, "NA")) %>%
+  mutate(PIK3CA = factor(PIK3CA, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = PIK3CA, y = AvgPercent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = paste(AvgPercent,"%")), position = position_stack(vjust = 0.5))+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()
+
+PatientPlots %>%
+  mutate(category_reordered = factor(CAFpopulations, levels =  c("preCAF1", "iCAF","preCAF2", "mCAF"))) %>% 
+  mutate(PIK3CA = factor(PIK3CA, levels= c("wt", "mut")))%>%
+   filter(!str_detect(PIK3CA, "NA")) %>%
+  ggplot(., aes(x = patient.ID, y = Percent, fill = category_reordered ))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c( "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#AD7FE9")) + 
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_grid( ~ PIK3CA, scales = "free", space = "free")
+
+```
+
+```{r}
+
+PatientPlots2 <- PatientPlots %>%
+  filter(!str_detect(PIK3CA, "NA"))%>%
+  filter(str_detect(CAFpopulations, "preCAF1"))
+
+PatientPlots2 %>%
+  mutate(PIK3CA = factor(PIK3CA, levels= c("wt", "mut")))%>%
+  ggplot(., aes(x = PIK3CA, y = Percent, color = PIK3CA))+
+  scale_color_manual(values = c("wt" = "#FD9AFC", "mut" = "#F70DD1")) + 
+  geom_boxplot()+
+  geom_point(position=position_dodge(width = 0.75))+
+  theme_minimal()+
+  expand_limits(y = c(0:100))+
+  stat_compare_means(method = "wilcox.test", label = "p.format")  # Add p-value
+
+```
+
+```{r}
+
+StromaStage <- select(Stroma@meta.data, c(patient.ID, populations, sample.origin, Group.Stage))
+
+# Recode stages: combine 1+2 and 3+4
+StromaStage <- StromaStage %>%
+  filter(sample.origin == "Tumor") %>%
+  mutate(StageGroup = ifelse(Group.Stage %in% c("1", "2"), "1/2", "3/4")) %>%
+  group_by(StageGroup, populations) %>%
+  summarise(Nb = n()) %>%
+  group_by(StageGroup) %>%
+  mutate(Total = sum(Nb)) %>%
+  ungroup() %>%
+  mutate(Percent = Nb / Total * 100) %>%
+  mutate(across(where(is.numeric), round, 2))
+
+# Plot combined stages
+StromaStage %>%
+  mutate(category_reordered = factor(populations, levels = c(
+  "myocytes", "SMC",
+    "contrPeri", "angPeri",
+    "lymphEC", "venEC", "art_capEC", "tipEC",
+    "glia",
+    "SEMF", "MAF", "SAF", "MIF", 
+    "preCAF1", "preCAF2", "iCAF", "mCAF"
+  ))) %>%
+  ggplot(aes(x = StageGroup, y = Percent, fill = category_reordered)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c(
+    "SEMF" = "#F6A937", "MAF" = "#1D7BFC", "SAF" = "#129B93", "MIF" = "#035C56",
+    "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+    "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+    "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+    "lymphEC" = "#1C7522", "venEC" = "#099E46", "art_capEC" = "#1DE00B", "tipEC" = "#AFF233",
+    "glia" = "#F37907"
+  )) +
+  theme_minimal() +
+  xlab("Tumor Stage Group") +
+  ylab("Percent Composition") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Start with metadata
+StromaStage <- select(Stroma@meta.data, c(patient.ID, populations, sample.origin, Group.Stage))
+
+# Recode stages: combine 1+2 and 3+4
+StromaStage <- StromaStage %>%
+  filter(sample.origin == "Normal") %>%
+  mutate(StageGroup = ifelse(Group.Stage %in% c("1", "2"), "1/2", "3/4")) %>%
+  group_by(StageGroup, populations) %>%
+  summarise(Nb = n()) %>%
+  group_by(StageGroup) %>%
+  mutate(Total = sum(Nb)) %>%
+  ungroup() %>%
+  mutate(Percent = Nb / Total * 100) %>%
+  mutate(across(where(is.numeric), round, 2))
+
+StromaStage %>%
+  mutate(category_reordered = factor(populations, levels = c(
+  "myocytes", "SMC",
+    "contrPeri", "angPeri",
+    "lymphEC", "venEC", "art_capEC", "tipEC",
+    "glia",
+    "SEMF", "MAF", "SAF", "MIF", 
+    "preCAF1", "preCAF2", "iCAF", "mCAF"
+  ))) %>%
+  ggplot(aes(x = StageGroup, y = Percent, fill = category_reordered)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c(
+    "SEMF" = "#F6A937", "MAF" = "#1D7BFC", "SAF" = "#129B93", "MIF" = "#035C56",
+    "preCAF1" = "#FD9AFC", "preCAF2" = "#53D3F3", "iCAF" = "#FD3369", "mCAF" = "#7012E5",
+    "myocytes" = "#C51B7C", "SMC" = "#C59ED4",
+    "contrPeri" = "#F6F00D", "angPeri" = "#E2C513",
+    "lymphEC" = "#1C7522", "venEC" = "#099E46", "art_capEC" = "#1DE00B", "tipEC" = "#AFF233",
+    "glia" = "#F37907"
+  )) +
+  theme_minimal() +
+  xlab("Tumor Stage Group") +
+  ylab("Percent Composition") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
