@@ -1,0 +1,188 @@
+---
+title: "Code1_colon_SI_scRNAseq"
+output: html_document
+date: "2025-07-14"
+---
+
+#load libraries
+```{r load libraries}
+
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+
+```
+
+#Seurat functions for creating object, make object
+```{r load data}
+
+SeuratAddCov <- function(SeuObj, species){
+  
+  if(species == "mmu"){
+    data <- PercentageFeatureSet(SeuObj, pattern="^mt-", col.name = "percent.mt")
+    data <- PercentageFeatureSet(data, pattern="^Rp[l|s][[:digit:]]", col.name="percent.rb")  
+    
+  }else if(species == "hs"){
+    data <- PercentageFeatureSet(SeuObj, pattern="^MT-", col.name = "percent.mt")
+    data <- PercentageFeatureSet(data, pattern="^RP[L|S][[:digit:]]", col.name="percent.rb")
+  }
+  return(data)
+}
+
+
+SeuratCreateObj <- function(dir, name){
+  data <- Read10X(dir)
+  SeuObj <- CreateSeuratObject(data, name, min.cells = 3, min.features = 200)
+  SeuObj <- SeuratAddCov(SeuObj, "mmu")
+  saveRDS(SeuObj, paste0("SeuObj",name, ".rds"))
+  return(SeuObj)
+}
+
+
+if(!file.exists("SeuObjColon.rds")){
+  dir <- ("/dir")
+  SeuObjColon <- SeuratCreateObj(dir, "Colon")
+  
+}else{
+  SeuObjColon <- readRDS("/dir/SeuObjColon.rds")
+  
+}
+
+```
+
+#QC plots
+```{r QC plots}
+
+VlnPlot(SeuObjColon, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rb"), ncol = 4)
+
+FeatureScatter(SeuObjColon, feature1 = "nCount_RNA", feature2 = "percent.mt")
+
+FeatureScatter(SeuObjColon, feature1 = "nCount_RNA", feature2 = "percent.rbl")
+
+FeatureScatter(SeuObjColon, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+
+```
+
+#filter object
+```{r filter object}
+SeuObjColonSub <- subset(SeuObjColon, subset = nFeature_RNA > 1000 & nFeature_RNA < 4000
+                         & nCount_RNA < 13000 & nCount_RNA > 1000
+                         & percent.mt < 6
+                         & percent.rbl < 25 & percent.rbl > 3)
+
+VlnPlot(SeuObjColonSub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rbl"), ncol = 4)
+
+```
+
+#normalize data, run PCA
+```{r normalize data run PCA}
+
+Colon <- SCTransform(SeuObjColonSub)
+
+DefaultAssay(Colon) <- "SCT"
+
+Colon <- RunPCA(Colon, verbose = FALSE)
+ElbowPlot(Colon)
+Colon <- RunUMAP(Colon, reduction = "pca", dims = 1:20)
+
+Colon <- FindNeighbors(Colon, reduction = "pca", dims = 1:20)
+Colon <- FindClusters(Colon, resolution = 0.5)
+
+
+DefaultAssay(Colon) <- "RNA"
+Colon <- NormalizeData(Colon, verbose = F)
+Colon <- FindVariableFeatures(Colon, selection.method = "vst", nfeatures = 3000, verbose = FALSE)
+Colon <- ScaleData(Colon, verbose = FALSE)
+
+DimPlot(Colon, reduction = "umap", label = T, label.size = 4) & NoAxes()
+
+```
+
+#identify low quality clusters
+```{r identify low quality clusters}
+
+FeaturePlot(Colon, c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rbl"), order =T)
+
+```
+
+#identify cell types
+```{r identify cell types}
+
+DefaultAssay(Colon) <- "RNA"
+
+FeaturePlot(Colon, c("Pdgfra", "Myh11", "S100b", "Pecam1", "Lyve1", "Ptprc", "Kit", "Ano1", "Tubb3"), order =T)
+
+```
+
+#filter out low quality and immune cells, re-cluster data
+```{r filter out low quality and immune cells re-cluster data}
+
+ColonFiltered <- subset(Colon, idents = c(0, 1, 2 ,3, 4, 5, 6, 7, 10))
+
+DefaultAssay(ColonFiltered) <- "SCT"
+
+ColonFiltered <- RunPCA(ColonFiltered, verbose = FALSE)
+ElbowPlot(ColonFiltered)
+ColonFiltered <- RunUMAP(ColonFiltered, reduction = "pca", dims = 1:15)
+
+ColonFiltered <- FindNeighbors(ColonFiltered, reduction = "pca", dims = 1:15)
+ColonFiltered <- FindClusters(ColonFiltered, resolution = 0.15)
+
+DimPlot(ColonFiltered, label =T)
+
+```
+
+#plot validated marker genes
+```{r plot marker genes}
+
+FeaturePlot(ColonFiltered, c( "Pdgfra", "Foxl1", "Bmp7","Wnt5a",
+                              "Cd34", "Cd81", "Grem1", "Pi16"), order =T) & NoAxes()
+
+```
+
+#name clusters
+```{r name clusters}
+
+ClusterIDs <- c( "PdgfraLow_Pi16-_Cd81-_1", 
+                 "PdgfraLow_Pi16-_Cd81-_2", "PdgfraHigh", "PdgfraLow_Pi16+_Cd81+", "Myh11+_SMC")
+
+
+names(ClusterIDs) <- levels(ColonFiltered)
+ColonFiltered <- RenameIdents(ColonFiltered, ClusterIDs)
+
+ColonFiltered@active.ident <- factor(ColonFiltered@active.ident,
+                                       levels = c( "PdgfraHigh", "PdgfraLow_Pi16-_Cd81-_1",  "PdgfraLow_Pi16-_Cd81-_2", "PdgfraLow_Pi16+_Cd81+", "Myh11+_SMC"))
+
+
+DimPlot(ColonFiltered, cols = c( "PdgfraHigh" = "#F6A937",
+                 "PdgfraLow_Pi16-_Cd81-_1" = "#1D7BFC", "PdgfraLow_Pi16-_Cd81-_2" = "#182FAF", 
+              'PdgfraLow_Pi16+_Cd81+' = '#129B93', 
+              "Myh11+_SMC" = "#C51B7C")) & NoAxes()
+
+```
+
+#find and plot unbiased marker genes
+```{r find and plot marker genes}
+
+Markers <- FindAllMarkers(ColonFiltered, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, min.diff.pct = 0.25, assay = "RNA")
+
+top10 <- Markers %>%
+  group_by(cluster)%>%
+  top_n(n = 10, wt = avg_log2FC)
+
+DefaultAssay(ColonFiltered) <- "RNA"
+
+VlnPlot(ColonFiltered, features = top10$gene, pt.size = 0, cols = c( "PdgfraHi" = "#F6A937",
+                 "PdgfraLow_Cd34+_1" = "#1D7BFC", "PdgfraLow_Cd34+_2" = "#182FAF", 
+              'PdgfraLow_Cd34+_Cd81+' = '#129B93', 
+              "Hhip+_Myofib" = "#C51B7C"), ncol = 8) & NoAxes()
+
+saveRDS(ColonFiltered, "/dir/Mm_Colon_this_study.rds")
+
+```
+
+
+
+
+
+
