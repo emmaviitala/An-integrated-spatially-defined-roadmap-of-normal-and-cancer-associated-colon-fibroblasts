@@ -1,0 +1,166 @@
+---
+title: "20260127_Viitala_et_al_qPCR"
+output: html_document
+date: "2026-01-27"
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(gdata)
+library(readxl)
+library(ggpubr)
+library(readxl)
+library(rstatix)
+
+Get_dCt <-function(.data, endogenous_gene){
+  .data %>%
+    #filter(!str_detect(SampleName, "noRT|w")) %>%
+    group_by(SampleName, Batch, Run) %>%
+    mutate(dCt = Ct - mean(Ct[TargetName == endogenous_gene]),
+           RelativeExpr = (2**(-dCt))*100,
+           median_ct = median(Ct, na.rm = TRUE),
+           diff = abs(Ct - median_ct)) %>%
+    ungroup()
+}
+
+Get_dCt <- function(.data, endogenous_gene) {
+  .data %>%
+    group_by(SampleName, Batch, Run) %>%
+    mutate(
+      dCt = Ct - mean(Ct[TargetName == endogenous_gene], na.rm = TRUE),
+      RelativeExpr = (2^(-dCt)) * 100) %>%
+    ungroup() %>%
+    
+    group_by(SampleName, Batch, Run, TargetName) %>%
+    mutate(
+      median_ct = median(Ct, na.rm = TRUE),
+      diff = abs(Ct - median_ct)) %>%
+    ungroup()
+}
+
+```
+
+
+```{r}
+
+Data <- readxl::read_xlsx("/dir/I_J_qPCR_data.xlsx")
+Data$Batch <- as.character(Data$Batch)
+
+Results <- Data %>%
+  Get_dCt("GAPDH") %>%
+  filter(diff <= 0.8)
+
+
+ForPlot1 <- Results %>%
+  filter(!str_detect(Ct, "NA")) %>%
+  group_by(TargetName, Batch, OE) %>%
+  mutate(ddCt = dCt - mean(dCt[Treatment == "ctrl"]),
+         flch = 2**-ddCt) %>%
+  ungroup()
+
+ForPlot2 <- Results %>%
+  filter(!str_detect(Ct, "NA")) %>%
+  group_by(TargetName, Batch) %>%
+  mutate(ddCt = dCt - mean(dCt[Treatment == "Dox" & OE == "emGFP"]),
+         flch = 2**-ddCt) %>%
+  ungroup()
+
+```
+
+
+
+```{r}
+
+df <- ForPlot1 %>%
+  filter(str_detect(TargetName, "emGFP|PRRX1|TWIST1|MAFB")) %>%
+  group_by(SampleName, TargetName, OE, Treatment) %>%
+  summarise(flch = mean(flch), .groups = "drop") %>%
+  mutate(
+    Treatment  = fct_relevel(Treatment, "ctrl", "Dox"),
+    TargetName = fct_relevel(TargetName, "emGFP", "PRRX1", "TWIST1", "MAFB"),
+    OE         = fct_relevel(OE, "emGFP", "PRRX1", "TWIST1", "MAFB"))
+
+
+stat.test <- df %>%
+  group_by(TargetName, OE) %>%
+  t_test(flch ~ Treatment) %>%
+  adjust_pvalue(method = "BH") %>%
+  mutate(
+    p.label = paste0("p = ", signif(p.adj, 3))) %>%
+  left_join(
+    df %>%
+      group_by(TargetName, OE) %>%
+      summarise(y.max = max(flch), .groups = "drop"),
+    by = c("TargetName", "OE")) %>%
+  group_by(TargetName) %>%
+  arrange(OE) %>%
+  mutate(y.position = max(y.max) * (1.05 + 0.08 * row_number())) %>%
+  ungroup()
+
+ggplot(df, aes(x = Treatment, y = flch, fill = OE)) +
+  stat_summary( fun = mean, geom = "col", position = position_dodge(width = 0.75), width = 0.7) +
+  
+  geom_point(aes(color = OE), position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.75 ), size = 0.5, alpha = 0.5) +
+  geom_text(data = stat.test, aes(x = 1.5, y = y.position, label = p.label), inherit.aes = FALSE, size = 3)+
+  
+  stat_pvalue_manual( stat.test, label = "p.label", tip.length = 0.01) +
+  
+  facet_wrap(~ TargetName, scales = "free", ncol = 4) +
+  expand_limits(y = 0) +
+  
+  scale_fill_manual(values = c("#96D602", "#F9EA36", "#F5A31D", "#EC7104")) +
+  scale_color_manual(values = c("black", "black", "black", "black")) +
+  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90),
+    legend.position = "none"
+  ) +
+  
+  labs(x = "Treatment", y = "Flch")
+
+```
+
+```{r}
+
+ForPlot2 %>%
+  group_by(SampleName, TargetName, OE, Treatment) %>%
+  summarise(flch = mean(flch), .groups = "drop") %>%
+  
+  filter(str_detect(Treatment, "Dox")) %>%
+  filter(!str_detect(TargetName, "emGFP|PRRX1|TWIST1|MAFB|GAPDH")) %>%
+  
+  mutate(
+    TargetName = fct_relevel(TargetName, "CXCL5", "MMP1", "WNT5A", "COL10A1", "COL11A1", "PLPP4"),
+    OE = fct_relevel(OE, "emGFP", "PRRX1", "TWIST1", "MAFB")) %>%
+  
+  ggplot(aes(x = OE, y = flch, fill = OE)) +
+  
+  stat_summary(fun = mean, geom = "col", width = 0.7) +
+  
+  geom_point( aes(color = OE), position = position_jitter(width = 0.15), size = 1, alpha = 0.5) +
+  
+  stat_compare_means(
+    comparisons = list(
+      c("emGFP", "PRRX1"),
+      c("emGFP", "TWIST1"),
+      c("emGFP", "MAFB")),
+    method = "t.test",          
+    label = "p.label",
+    hide.ns = TRUE) +
+  
+  facet_wrap(~ TargetName, scales = "free", ncol = 6) +
+  expand_limits(y = 0) +
+  
+  scale_color_manual(values = c("black", "black", "black", "black"), ) +
+  
+  theme_minimal() +
+  theme( axis.text.x = element_text(angle = 90), legend.position = "none") +
+  labs(x = "OE", y = "Flch")
+
+```
+
+
